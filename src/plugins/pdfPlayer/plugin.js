@@ -29,6 +29,10 @@ export class PdfPlayer {
         this.onDialogClosed = this.onDialogClosed.bind(this);
         this.onWindowKeyDown = this.onWindowKeyDown.bind(this);
         this.toggleFullscreen = this.toggleFullscreen.bind(this);
+
+        this.zoomLevel = 1;
+        this.minZoom = 0.5;
+        this.maxZoom = 3;
     }
 
     play(options) {
@@ -132,6 +136,57 @@ export class PdfPlayer {
         this.touchHelper = new TouchHelper(element);
         Events.on(this.touchHelper, 'swiperight', () => this.previous());
         Events.on(this.touchHelper, 'swipeleft', () => this.next());
+
+        this.addPinchZoom(element);
+    }
+
+    addPinchZoom(element) {
+        let initialDistance = 0;
+        let initialZoom = 1;
+
+        const getDistance = (touches) => {
+            if (touches.length < 2) return 0;
+            const dx = touches[0].clientX - touches[1].clientX;
+            const dy = touches[0].clientY - touches[1].clientY;
+            return Math.sqrt(dx * dx + dy * dy);
+        };
+
+        const onTouchStart = (e) => {
+            if (e.touches.length === 2) {
+                initialDistance = getDistance(e.touches);
+                initialZoom = this.zoomLevel;
+            }
+        };
+
+        const onTouchMove = (e) => {
+            if (e.touches.length === 2 && initialDistance > 0) {
+                e.preventDefault();
+                const currentDistance = getDistance(e.touches);
+                const scale = currentDistance / initialDistance;
+                let newZoom = initialZoom * scale;
+                newZoom = Math.max(this.minZoom, Math.min(this.maxZoom, newZoom));
+                if (newZoom !== this.zoomLevel) {
+                    this.zoomLevel = newZoom;
+                    this.reloadCurrentPage();
+                }
+            }
+        };
+
+        const onTouchEnd = (e) => {
+            if (e.touches.length < 2) {
+                initialDistance = 0;
+                if (this.zoomLevel !== initialZoom) {
+                    this.saveZoomPreference();
+                }
+            }
+        };
+
+        element.addEventListener('touchstart', onTouchStart, { passive: true });
+        element.addEventListener('touchmove', onTouchMove, { passive: false });
+        element.addEventListener('touchend', onTouchEnd, { passive: true });
+        element.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+        this._pinchHandlers = { onTouchStart, onTouchMove, onTouchEnd };
     }
 
     onDialogClosed() {
@@ -146,8 +201,22 @@ export class PdfPlayer {
 
     unbindEvents() {
         this.touchHelper?.destroy();
+        this.removePinchZoom();
         this.mediaElement?.removeEventListener('close', this.onDialogClosed);
         document.removeEventListener('keydown', this.onWindowKeyDown);
+    }
+
+    removePinchZoom() {
+        if (this._pinchHandlers) {
+            const element = document.querySelector('#container');
+            if (element) {
+                element.removeEventListener('touchstart', this._pinchHandlers.onTouchStart);
+                element.removeEventListener('touchmove', this._pinchHandlers.onTouchMove);
+                element.removeEventListener('touchend', this._pinchHandlers.onTouchEnd);
+                element.removeEventListener('touchcancel', this._pinchHandlers.onTouchEnd);
+            }
+            this._pinchHandlers = null;
+        }
     }
 
     toggleFullscreen() {
@@ -294,7 +363,8 @@ export class PdfPlayer {
         const devicePixelRatio = window.devicePixelRatio || 1;
         this.book.getPage(number).then(page => {
             const original = page.getViewport({ scale: 1 });
-            const scale = Math.min((window.innerHeight / original.height), (window.innerWidth / original.width));
+            const baseScale = Math.min((window.innerHeight / original.height), (window.innerWidth / original.width));
+            const scale = baseScale * this.zoomLevel;
             const viewport = page.getViewport({ scale: scale * devicePixelRatio });
 
             canvas.width = viewport.width;
